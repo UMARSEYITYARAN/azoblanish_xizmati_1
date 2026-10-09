@@ -41,12 +41,17 @@ INSTALLED_APPS = [
     'drf_yasg',
     'rest_framework.authtoken',
     'app.apps.AppConfig',
+    'django.contrib.staticfiles',
+    'corsheaders',
 ]
 
 AUTH_USER_MODEL = 'app.User'
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -85,6 +90,10 @@ DATABASES = {
         'NAME': BASE_DIR / 'db.sqlite3',
     }
 }
+CORS_ALLOWED_ORIGINS = [
+    'http://localhost:3000',
+    'https://your-frontend.vercel.app',
+]
 
 CACHES = {
     "default": {
