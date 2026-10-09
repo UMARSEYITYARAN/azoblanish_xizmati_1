@@ -1,6 +1,6 @@
 from datetime import timedelta
-from time import timezone
 
+from django.utils import timezone
 from rest_framework import generics, status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.permissions import IsAdminUser
@@ -169,48 +169,6 @@ class ProductListCreateView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-
-
-
-class RegisterView(generics.CreateAPIView):
-    serializer_class = RegisterSerializer
-    permission_classes = [AllowAny]
-
-
-    def perform_create(self, serializer):
-        user = serializer.save()
-        send_verification_code(user)
-
-
-class VerifyEmailView(generics.GenericAPIView):
-    serializer_class = VerifyEmailSerializer
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        user = User.objects.filter(
-            email=serializer.validated_data["email"], is_active=False
-        ).first()
-        record = EmailCode.objects.filter(user=user).first()
-
-        if record is None or record.is_expired():
-            return Response({"detail": "Kod topilmadi yoki muddati tugagan"}, status=400)
-
-        if record.attempts >= EmailCode.MAX_ATTEMPTS:
-            return Response({"detail": "Urinishlar tugadi, yangi kod so'rang"}, status=400)
-
-        if record.code != serializer.validated_data["code"]:
-            record.attempts += 1
-            record.save()
-            return Response({"detail": "Kod noto'g'ri"}, status=400)
-
-        user.is_active = True
-        user.save()
-        record.delete()
-        return Response({"detail": "Email tasdiqlandi. Endi login qiling."})
-
 class LogoutView(generics.GenericAPIView):
     serializer_class = LogoutSerializer
     permission_classes = [IsAuthenticated]
@@ -235,23 +193,3 @@ class MeView(APIView):
 
 RESEND_INTERVAL = timedelta(seconds=60)
 
-
-class ResendCodeView(generics.GenericAPIView):
-    serializer_class = ResendCodeSerializer
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = self.get_serializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        user = User.objects.filter(
-            email=serializer.validated_data["email"], is_active=False
-        ).first()
-
-        if user:
-            record = EmailCode.objects.filter(user=user).first()
-            if record and timezone.now() - record.created_at < RESEND_INTERVAL:
-                return Response({"detail": "1 daqiqada faqat 1 marta"}, status=429)
-            send_verification_code(user)
-
-        return Response({"detail": "Agar bunday email ro'yxatdan o'tgan bo'lsa, kod yuborildi"})
