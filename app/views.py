@@ -1,0 +1,257 @@
+from datetime import timedelta
+from time import timezone
+
+from rest_framework import generics, status
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import IsAdminUser
+from rest_framework.permissions import IsAuthenticatedOrReadOnly
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from app.models import Product, EmailCode, User
+from app.serializers import ProductSerializer, VerifyEmailSerializer, ResendCodeSerializer, ForgotPasswordSerializer, \
+    ConfirmPasswordSerializer, ResetPasswordSerializer
+from .serializers import RegisterSerializer, LogoutSerializer
+from .services import send_verification_code
+
+from .services import send_verification_code, confirm_code, finish_code
+from .services.pre_token import make_pre_token, get_user
+class ResetPasswordView(generics.GenericAPIView):
+    serializer_class = ResetPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = get_user(data["pre_token"])
+        finish_code(user)          # kod tasdiqlanmagan bo'lsa — 400
+        user.set_password(data["new_password"])
+        user.save()
+        return Response({"detail": "Parol yangilandi."})
+
+
+class ConfirmPasswordView(generics.GenericAPIView):
+    serializer_class = ConfirmPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = get_user(data["pre_token"])
+        confirm_code(user, data["code"])
+        return Response({"detail": "Kod to'g'ri. Yangi parol kiriting."})
+class ForgotPasswordView(generics.GenericAPIView):
+    serializer_class = ForgotPasswordSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data["email"]
+
+        user = User.objects.filter(email=email, is_active=True).first()
+        if user:
+            send_verification_code(user)   # register'dagi funksiya
+
+        # email yo'q bo'lsa ham javob bir xil (user_id=0)
+        user_id = user.id if user else 0
+        return Response({"pre_token": make_pre_token(user_id)})
+RESEND_INTERVAL = timedelta(seconds=60)
+
+
+class ResendCodeView(generics.GenericAPIView):
+    serializer_class = ResendCodeSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = get_user(serializer.validated_data["pre_token"])
+
+        record = EmailCode.objects.filter(user=user).first()
+        now = timezone.now()
+        if record and now - record.created_at < RESEND_INTERVAL:
+            return Response(
+                {"detail": "1 daqiqada faqat 1 marta"}, status=429
+            )
+
+        send_verification_code(user)
+        # yangi pre_token — yana 30 daqiqa
+        return Response({"pre_token": make_pre_token(user.id)})
+
+class RegisterView(generics.CreateAPIView):
+    serializer_class = RegisterSerializer
+    permission_classes = [AllowAny]
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+
+        send_verification_code(user)
+        return Response(
+            {"email": user.email, "pre_token": make_pre_token(user.id)},
+            status=201,
+        )
+
+
+class VerifyEmailView(generics.GenericAPIView):
+    serializer_class = VerifyEmailSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        user = get_user(data["pre_token"])
+        confirm_code(user, data["code"])     # 1. tasdiqla
+        user.is_active = True                # 2. ishingni qil
+        user.save()
+        finish_code(user)                    # 3. yop
+        return Response(
+            {"detail": "Email tasdiqlandi. Endi login qiling."}
+        )
+
+class ProductListPublicView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        products = Product.objects.all()
+        serializer = ProductSerializer(products, many=True)
+        return Response(serializer.data)
+
+
+
+
+class ProductCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = ProductSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+class ProductDeleteView(APIView):
+    permission_classes = [IsAdminUser]
+
+    def delete(self, request, pk):
+        product = Product.objects.get(pk=pk)
+        product.delete()
+        return Response({"message": "Product o‘chirildi"}, status=status.HTTP_204_NO_CONTENT)
+
+
+
+class ProductListCreateView(APIView):
+    permission_classes = [IsAuthenticatedOrReadOnly]
+
+    def get(self, request):
+        products = Product.objects.all()
+        serializer = ProductSerializer(products, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = ProductSerializer(data=request.data)
+        if serializer.is_valid():
+            serializer.save()
+            return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+
+
+
+class RegisterView(generics.CreateAPIView):
+    serializer_class = RegisterSerializer
+    permission_classes = [AllowAny]
+
+
+    def perform_create(self, serializer):
+        user = serializer.save()
+        send_verification_code(user)
+
+
+class VerifyEmailView(generics.GenericAPIView):
+    serializer_class = VerifyEmailSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = User.objects.filter(
+            email=serializer.validated_data["email"], is_active=False
+        ).first()
+        record = EmailCode.objects.filter(user=user).first()
+
+        if record is None or record.is_expired():
+            return Response({"detail": "Kod topilmadi yoki muddati tugagan"}, status=400)
+
+        if record.attempts >= EmailCode.MAX_ATTEMPTS:
+            return Response({"detail": "Urinishlar tugadi, yangi kod so'rang"}, status=400)
+
+        if record.code != serializer.validated_data["code"]:
+            record.attempts += 1
+            record.save()
+            return Response({"detail": "Kod noto'g'ri"}, status=400)
+
+        user.is_active = True
+        user.save()
+        record.delete()
+        return Response({"detail": "Email tasdiqlandi. Endi login qiling."})
+
+class LogoutView(generics.GenericAPIView):
+    serializer_class = LogoutSerializer
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            RefreshToken(serializer.validated_data["refresh"]).blacklist()
+        except TokenError:
+            return Response({"detail": "Token yaroqsiz"}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(status=status.HTTP_205_RESET_CONTENT)
+
+
+class MeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        return Response({"id": user.id, "email": user.email, "first_name": user.first_name})
+
+
+RESEND_INTERVAL = timedelta(seconds=60)
+
+
+class ResendCodeView(generics.GenericAPIView):
+    serializer_class = ResendCodeSerializer
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = User.objects.filter(
+            email=serializer.validated_data["email"], is_active=False
+        ).first()
+
+        if user:
+            record = EmailCode.objects.filter(user=user).first()
+            if record and timezone.now() - record.created_at < RESEND_INTERVAL:
+                return Response({"detail": "1 daqiqada faqat 1 marta"}, status=429)
+            send_verification_code(user)
+
+        return Response({"detail": "Agar bunday email ro'yxatdan o'tgan bo'lsa, kod yuborildi"})
